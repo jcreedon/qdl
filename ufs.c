@@ -90,6 +90,10 @@ struct ufs_body *ufs_parse_body(xmlNode *node)
 	result->bLogicalBlockSize = attr_as_unsigned(node, "bLogicalBlockSize", &errors);
 	result->bProvisioningType = attr_as_unsigned(node, "bProvisioningType", &errors);
 	result->wContextCapabilities = attr_as_unsigned(node, "wContextCapabilities", &errors);
+	{
+		int wb_errors = 0;
+		result->wb_buffer_size_in_kb = attr_as_unsigned(node, "wb_buffer_size_in_kb", &wb_errors);
+	}
 	result->desc = attr_as_string(node, "desc", &errors);
 
 	if (errors) {

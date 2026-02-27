@@ -37,6 +37,7 @@ struct ufs_body {
 	unsigned int bLogicalBlockSize;
 	unsigned int bProvisioningType;
 	unsigned int wContextCapabilities;
+	unsigned int wb_buffer_size_in_kb;
 	const char	*desc;
 
 	struct list_head node;

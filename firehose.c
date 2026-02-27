@@ -86,6 +86,7 @@ static xmlNode *firehose_response_parse(const void *buf, size_t len, int *error)
 static int firehose_generic_parser(xmlNode *node, void *data __unused, bool *rawmode)
 {
 	xmlChar *value;
+	xmlChar *msg;
 	int ret = -EINVAL;
 
 	value = xmlGetProp(node, (xmlChar *)"value");
@@ -99,6 +100,11 @@ static int firehose_generic_parser(xmlNode *node, void *data __unused, bool *raw
 		ret = FIREHOSE_ACK;
 	} else if (xmlStrcmp(value, (xmlChar *)"NAK") == 0) {
 		ret = FIREHOSE_NAK;
+		msg = xmlGetProp(node, (xmlChar *)"message");
+		if (msg && msg[0])
+			ux_err("device NAK: %s\n", msg);
+		if (msg)
+			xmlFree(msg);
 	}
 
 	xmlFree(value);
@@ -189,6 +195,8 @@ static int firehose_read(struct qdl_device *qdl, int timeout_ms,
 
 		if (ret >= 0)
 			resp = ret;
+		if (ret == FIREHOSE_NAK)
+			ux_err("device response: %.*s\n", (int)n, buf);
 
 		if (rawmode)
 			break;
@@ -786,7 +794,7 @@ out:
 	return ret == FIREHOSE_ACK ? 0 : -1;
 }
 
-static int firehose_send_single_tag(struct qdl_device *qdl, xmlNode *node)
+static int firehose_send_single_tag(struct qdl_device *qdl, xmlNode *node, int timeout_ms)
 {
 	xmlNode *root;
 	xmlDoc *doc;
@@ -801,9 +809,18 @@ static int firehose_send_single_tag(struct qdl_device *qdl, xmlNode *node)
 	if (ret < 0)
 		goto out;
 
-	ret = firehose_read(qdl, 5000, firehose_generic_parser, NULL);
+	ret = firehose_read(qdl, timeout_ms, firehose_generic_parser, NULL);
 	if (ret) {
-		ux_err("ufs request failed\n");
+		if (ret == FIREHOSE_NAK)
+			ux_err("ufs request failed (device NAK)\n");
+		else if (ret == -ETIMEDOUT)
+			ux_err("ufs request failed (timeout waiting for response)\n");
+		else if (ret == -EINVAL)
+			ux_err("ufs request failed (invalid response from device)\n");
+		else if (ret == -EIO)
+			ux_err("ufs request failed (I/O error)\n");
+		else
+			ux_err("ufs request failed (error %d)\n", ret);
 		ret = -EINVAL;
 	}
 
@@ -839,7 +856,7 @@ int firehose_apply_ufs_common(struct qdl_device *qdl, struct ufs_common *ufs)
 		xml_setpropf(node_to_send, "shared_wb_buffer_size_in_kb", "%d", ufs->shared_wb_buffer_size_in_kb);
 	}
 
-	ret = firehose_send_single_tag(qdl, node_to_send);
+	ret = firehose_send_single_tag(qdl, node_to_send, 5000);
 	if (ret)
 		ux_err("failed to send ufs common tag\n");
 
@@ -863,13 +880,14 @@ int firehose_apply_ufs_body(struct qdl_device *qdl, struct ufs_body *ufs)
 	xml_setpropf(node_to_send, "bLogicalBlockSize", "%d", ufs->bLogicalBlockSize);
 	xml_setpropf(node_to_send, "bProvisioningType", "%d", ufs->bProvisioningType);
 	xml_setpropf(node_to_send, "wContextCapabilities", "%d", ufs->wContextCapabilities);
+	xml_setpropf(node_to_send, "wb_buffer_size_in_kb", "%d", ufs->wb_buffer_size_in_kb);
 	if (qdl->slot != UINT_MAX) {
 		xml_setpropf(node_to_send, "slot", "%u", qdl->slot);
 	}
 	if (ufs->desc)
 		xml_setpropf(node_to_send, "desc", "%s", ufs->desc);
 
-	ret = firehose_send_single_tag(qdl, node_to_send);
+	ret = firehose_send_single_tag(qdl, node_to_send, 5000);
 	if (ret)
 		ux_err("failed to apply ufs body tag\n");
 
@@ -890,7 +908,8 @@ int firehose_apply_ufs_epilogue(struct qdl_device *qdl, struct ufs_epilogue *ufs
 		xml_setpropf(node_to_send, "slot", "%u", qdl->slot);
 	}
 
-	ret = firehose_send_single_tag(qdl, node_to_send);
+	/* Commit can take a long time (e.g. OTP write) */
+	ret = firehose_send_single_tag(qdl, node_to_send, commit ? 120000 : 5000);
 	if (ret)
 		ux_err("failed to apply ufs epilogue\n");
 
